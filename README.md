@@ -57,6 +57,8 @@ UPDATE_VERSION_STRING=1
 BUILD_NUMBER=123
 JENKINS_URL=http://jenkins.local
 JENKINS_JOB_NAME=my-job
+DRY_RUN=0
+GIT_PUSH=1
 ```
 
 ## 사용 예시
@@ -88,9 +90,12 @@ JENKINS_JOB_NAME=my-job
 
 ### 2단계: 버전 업데이트
 - iOS:
-  - project.pbxproj의 MARKETING_VERSION 및 CURRENT_PROJECT_VERSION 업데이트
+  - Info.plist 파일의 CFBundleShortVersionString 업데이트
+  - project.pbxproj의 MARKETING_VERSION 업데이트
+  - BUILD_NUMBER가 제공된 경우 CURRENT_PROJECT_VERSION 업데이트
 - Android:
-  - build.gradle의 versionName 및 versionCode 업데이트
+  - build.gradle 파일의 versionName 업데이트
+  - BUILD_NUMBER가 제공된 경우 versionCode 업데이트
 
 ### 3단계: Git 처리
 - 변경사항 스테이징
@@ -111,9 +116,28 @@ JENKINS_JOB_NAME=my-job
 ### 오류 처리
 - 커밋되지 않은 변경사항이 감지되면 실행 중지
 - Jenkins CLI 다운로드 및 작업 트리거 확인
+- 필수 도구(git, curl, java) 존재 여부 확인
+- 구성 파일 유효성 검사
+- 태그 형식 검증
 
 ### Dry-Run 모드
 - 파일, Git 저장소 또는 Jenkins 작업을 수정하지 않고 수행될 모든 작업 출력
+
+---
+
+## 트러블슈팅
+
+### 일반적인 문제
+1. Git 태그 충돌
+   - 해결: --force 옵션으로 기존 태그 덮어쓰기
+   
+2. Jenkins 연결 실패
+   - Jenkins URL 접근성 확인
+   - Jenkins CLI 권한 확인
+   
+3. 버전 파일 찾기 실패
+   - 프로젝트 구조 확인
+   - 파일 경로 설정 검증
 
 ---
 
@@ -126,3 +150,13 @@ JENKINS_JOB_NAME=my-job
 ## 기여
 
 기여를 환영합니다! 스크립트를 개선하기 위한 이슈나 풀 리퀘스트를 제출해주세요.
+
+
+---
+
+## 연락처
+
+문의사항이나 버그 리포트는 아래 연락처로 보내주세요:
+
+- 이메일: support@example.com
+- 이슈 트래커: https://github.com/example/project/issues
