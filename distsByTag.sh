@@ -79,11 +79,13 @@ Usage: $SCRIPT_NAME --make-config        설정 파일 생성
        $SCRIPT_NAME --jenkins-url <url> --jenkins-job <job-name> --dry-run
        $SCRIPT_NAME --jenkins-user     Jenkins 사용자 ID
        $SCRIPT_NAME --jenkins-token    Jenkins API 토큰
+       $SCRIPT_NAME -u|--update-version-string    버전 문자열 업데이트
+       $SCRIPT_NAME -uf|--update-version-string-forcefully    버전 체크를 건너뛰고 강제로 업데이트
        $SCRIPT_NAME -h
 
 Examples:
   $SCRIPT_NAME --make-config
-  $SCRIPT_NAME -t 'v1.2.3' -p both -r release
+  $SCRIPT_NAME -t 'v1.2.3' -p both -r release -u
   $SCRIPT_NAME --config .distsConfig --jenkins-url http://jenkins.local --jenkins-job my-job --dry-run
 EOF
 }
@@ -321,14 +323,18 @@ updateVersion() {
             oldMarketingVersion=$(grep 'MARKETING_VERSION =' "$IOS_FILE" | awk '{print $3}' | tr -d ';')
             oldCurrentProjectVersion=$(grep 'CURRENT_PROJECT_VERSION =' "$IOS_FILE" | awk '{print $3}' | tr -d ';')
             
-            if [ "$DRY_RUN" -eq 1 ]; then
-                echo "[$SCRIPT_NAME] DRY-RUN: Would update iOS file:"
-                echo "[$SCRIPT_NAME] DRY-RUN:   Replace MARKETING_VERSION = $oldMarketingVersion; with MARKETING_VERSION = $MARKET_VERSION;"
-                echo "[$SCRIPT_NAME] DRY-RUN:   Replace CURRENT_PROJECT_VERSION = $oldCurrentProjectVersion; with CURRENT_PROJECT_VERSION = $BUILD_NUMBER;"
+            if checkVersionUpdate "$MARKET_VERSION" "$oldMarketingVersion" "iOS"; then
+                if [ "$DRY_RUN" -eq 1 ]; then
+                    echo "[$SCRIPT_NAME] DRY-RUN: Would update iOS file:"
+                    echo "[$SCRIPT_NAME] DRY-RUN:   Replace MARKETING_VERSION = $oldMarketingVersion; with MARKETING_VERSION = $MARKET_VERSION;"
+                    echo "[$SCRIPT_NAME] DRY-RUN:   Replace CURRENT_PROJECT_VERSION = $oldCurrentProjectVersion; with CURRENT_PROJECT_VERSION = $BUILD_NUMBER;"
+                else
+                    sed -i "s/MARKETING_VERSION = $oldMarketingVersion;/MARKETING_VERSION = $MARKET_VERSION;/" "$IOS_FILE"
+                    sed -i "s/CURRENT_PROJECT_VERSION = $oldCurrentProjectVersion;/CURRENT_PROJECT_VERSION = $BUILD_NUMBER;/" "$IOS_FILE"
+                    echo "[$SCRIPT_NAME] Updated iOS version in $IOS_FILE"
+                fi
             else
-                sed -i "s/MARKETING_VERSION = $oldMarketingVersion;/MARKETING_VERSION = $MARKET_VERSION;/" "$IOS_FILE"
-                sed -i "s/CURRENT_PROJECT_VERSION = $oldCurrentProjectVersion;/CURRENT_PROJECT_VERSION = $BUILD_NUMBER;/" "$IOS_FILE"
-                echo "[$SCRIPT_NAME] Updated iOS version in $IOS_FILE"
+                UPDATE_VERSION_STRING=0
             fi
         fi
     fi
@@ -337,13 +343,12 @@ updateVersion() {
         local AOS_FILE
         AOS_FILE=$(find . -name 'build.gradle' -exec grep -lir 'com.android.application' {} + | grep -v 'node_modules')
         if [ -f "$AOS_FILE" ]; then
-            local oldVersionName oldVersionCode parsedTagVersion versionComparison
+            local oldVersionName oldVersionCode parsedTagVersion
             oldVersionName=$(grep 'versionName' "$AOS_FILE" | awk -F\" '{print $2}')
             oldVersionCode=$(grep 'versionCode' "$AOS_FILE" | awk '{print $2}')
             parsedTagVersion=$(getParsedVersion "$GIT_TAG_FULL")
-            versionComparison=$(vercomp "$parsedTagVersion" "$oldVersionName")
 
-            if [ "$versionComparison" -lt 2 ]; then
+            if checkVersionUpdate "$parsedTagVersion" "$oldVersionName" "Android"; then
                 if [ "$DRY_RUN" -eq 1 ]; then
                     echo "[$SCRIPT_NAME] DRY-RUN: Would update Android file:"
                     echo "[$SCRIPT_NAME] DRY-RUN:   Replace versionName \"$oldVersionName\" with versionName \"$parsedTagVersion\""
@@ -354,8 +359,7 @@ updateVersion() {
                     echo "[$SCRIPT_NAME] Updated Android version in $AOS_FILE"
                 fi
             else
-                printError "Parsed tag version ($parsedTagVersion) is older than current version ($oldVersionName). Update aborted."
-                exit 1
+                UPDATE_VERSION_STRING=0
             fi
         fi
     fi
@@ -404,6 +408,61 @@ EOF
     exit 0
 }
 
+# Utility functions 섹션에 추가
+checkVersionUpdate() {
+    local parsedTagVersion="$1"
+    local currentVersion="$2"
+    local platform="$3"
+    
+    if [ "$UPDATE_VERSION_STRING_FORCE" -eq 1 ]; then
+        return 0
+    fi
+    
+    local versionComparison
+    versionComparison=$(vercomp "$parsedTagVersion" "$currentVersion")
+    
+    if [ "$versionComparison" -ge 2 ]; then
+        echo "[$SCRIPT_NAME] $platform: 새 버전($parsedTagVersion)이 현재 버전($currentVersion)보다 낮습니다."
+        return 1
+    fi
+    return 0
+}
+
+shouldUpdateVersion() {
+    local HAS_IOS_FILE HAS_AOS_FILE SHOULD_UPDATE=0
+    local parsedTagVersion
+    
+    # iOS와 Android 파일 존재 여부 확인
+    HAS_IOS_FILE=$(find . -name 'project.pbxproj' -not -path "*/Pods/*" -not -path "*/node_modules/*" -print -quit)
+    HAS_AOS_FILE=$(find . -name 'build.gradle' -exec grep -l 'com.android.application' {} + 2>/dev/null | grep -v 'node_modules' | head -n1)
+    
+    # 태로젝트 파일이 하나도 없으면 early return
+    if [ -z "$HAS_IOS_FILE" ] && [ -z "$HAS_AOS_FILE" ]; then
+        return 1
+    fi
+    
+    parsedTagVersion=$(getParsedVersion "$GIT_TAG_FULL")
+    
+    if [ -n "$HAS_IOS_FILE" ]; then
+        local oldMarketingVersion
+        oldMarketingVersion=$(grep 'MARKETING_VERSION =' "$HAS_IOS_FILE" | awk '{print $3}' | tr -d ';' | head -n1)
+        if [ -n "$oldMarketingVersion" ]; then
+            checkVersionUpdate "$parsedTagVersion" "$oldMarketingVersion" "iOS" && SHOULD_UPDATE=1
+        fi
+    fi
+    
+    if [ -n "$HAS_AOS_FILE" ]; then
+        local oldVersionName
+        oldVersionName=$(grep 'versionName' "$HAS_AOS_FILE" | awk -F'"' '{print $2}' | head -n1)
+        if [ -n "$oldVersionName" ]; then
+            checkVersionUpdate "$parsedTagVersion" "$oldVersionName" "Android" && SHOULD_UPDATE=1
+        fi
+    fi
+    
+    [ "$SHOULD_UPDATE" -eq 1 ]
+    return $?
+}
+
 # Default variables
 UPDATE_VERSION_STRING=0
 DRY_RUN=0
@@ -416,6 +475,7 @@ JENKINS_JAR="/tmp/jenkins-cli.jar"
 INPUT_OS="unknown"
 JENKINS_USER=""
 JENKINS_TOKEN=""
+UPDATE_VERSION_STRING_FORCE=0
 
 # Argument parsing
 while [[ $# -gt 0 ]]; do
@@ -434,7 +494,12 @@ while [[ $# -gt 0 ]]; do
         -t|--tag) GIT_TAG_FULL="$2"; shift 2 ;;
         -c|--config) CONFIG_FILE="$2"; shift 2 ;;
         -r|--release-type) RELEASE_TYPE="$2"; shift 2 ;;
-        --update-version-string) UPDATE_VERSION_STRING=1; shift ;;
+        -u|--update-version-string) UPDATE_VERSION_STRING=1; shift ;;
+        -uf|--update-version-string-forcefully) 
+            UPDATE_VERSION_STRING=1
+            UPDATE_VERSION_STRING_FORCE=1
+            shift 
+            ;;
         --jenkins-url) JENKINS_URL="$2"; shift 2 ;;
         --jenkins-job) JENKINS_JOB_NAME="$2"; shift 2 ;;
         --jenkins-user) JENKINS_USER="$2"; shift 2 ;;
@@ -454,6 +519,14 @@ else
 fi
 
 checkArguments
+
+if [ "$UPDATE_VERSION_STRING" -eq 0 ]; then
+    if shouldUpdateVersion; then
+        UPDATE_VERSION_STRING=1
+        [ "$INPUT_OS" == "unknown" ] && INPUT_OS="both"
+        echo "[$SCRIPT_NAME] 프로젝트 파일이 감지되어 자동으로 버전 업데이트를 활성화합니다. (플랫폼: $INPUT_OS)"
+    fi
+fi
 
 if [ "$UPDATE_VERSION_STRING" -eq 1 ]; then
     updateVersion "$INPUT_OS"
