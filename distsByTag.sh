@@ -36,19 +36,60 @@ function hide_spinner() {
 
 # Utility functions
 vercomp() {
-    [[ $1 == $2 ]] && { echo 0; return; }
-    local IFS=. i ver1=($1) ver2=($2)
-    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++)); do ver1[i]=0; done
-    for ((i=0; i<${#ver1[@]}; i++)); do
-        ver2[i]=${ver2[i]:-0}
-        if ((10#${ver1[i]} > 10#${ver2[i]})); then echo 1; return; fi
-        if ((10#${ver1[i]} < 10#${ver2[i]})); then echo 2; return; fi
+    local IFS=.
+    local v1=($1) v2=($2)
+
+    # Normalize length by padding the shorter version with zeros
+    while [ ${#v1[@]} -lt ${#v2[@]} ]; do v1+=("0"); done
+    while [ ${#v2[@]} -lt ${#v1[@]} ]; do v2+=("0"); done
+
+    # Compare each segment as an integer
+    for ((i=0; i<${#v1[@]}; i++)); do
+        # Trim leading zeros and remove spaces
+        local num1=$(echo "${v1[i]}" | sed 's/^0*//' | tr -d ' ')
+        local num2=$(echo "${v2[i]}" | sed 's/^0*//' | tr -d ' ')
+
+        # Default empty values to 0
+        num1=${num1:-0}
+        num2=${num2:-0}
+
+        # Ensure valid integers
+        if ! [[ "$num1" =~ ^[0-9]+$ ]]; then num1=0; fi
+        if ! [[ "$num2" =~ ^[0-9]+$ ]]; then num2=0; fi
+
+        if (( num1 > num2 )); then
+            echo 1  # First version is newer
+            return
+        elif (( num1 < num2 )); then
+            echo 2  # Second version is newer
+            return
+        fi
     done
-    echo 0
+    echo 0  # Versions are equal
 }
 
 getParsedVersion() {
-    sed -E 's/^[^0-9]*//' <<< "$1"
+    local tag="$1"
+
+    # Remove prefix only if it starts with a non-numeric character (e.g., "R", "D")
+    if [[ "$tag" =~ ^[^0-9] ]]; then
+        tag="${tag:1}"  # Remove first character
+    fi
+
+    # Extract first three segments and sanitize it for sed usage
+    echo "$tag" | awk -F. '{print $1"."$2"."$3}' | tr -d '\n' | sed 's/[\/&]/\\&/g'
+}
+
+getParsedBuildNumber() {
+    local tag="$1"
+
+    # Remove prefix only if it starts with a non-numeric character
+    if [[ "$tag" =~ ^[^0-9] ]]; then
+        tag="${tag:1}"
+    fi
+
+    # Extract the fourth segment (build number)
+    echo "$tag" | awk -F. '{print $4}'
 }
 
 printError() {
@@ -320,17 +361,21 @@ updateVersion() {
         IOS_FILE=$(find . -name 'project.pbxproj' -not -path "*/Pods/*" -not -path "*/node_modules/*")
         if [ -f "$IOS_FILE" ]; then
             local oldMarketingVersion oldCurrentProjectVersion
-            oldMarketingVersion=$(grep 'MARKETING_VERSION =' "$IOS_FILE" | awk '{print $3}' | tr -d ';')
-            oldCurrentProjectVersion=$(grep 'CURRENT_PROJECT_VERSION =' "$IOS_FILE" | awk '{print $3}' | tr -d ';')
-            
-            if checkVersionUpdate "$MARKET_VERSION" "$oldMarketingVersion" "iOS"; then
+            oldMarketingVersion=$(grep 'MARKETING_VERSION =' "$IOS_FILE" | awk '{print $3}' | tr -d ';' | head -n 1)
+            oldCurrentProjectVersion=$(grep 'CURRENT_PROJECT_VERSION =' "$IOS_FILE" | awk '{print $3}' | tr -d ';' | head -n 1)
+            parsedTagVersion=$(getParsedVersion "$GIT_TAG_FULL")
+            BUILD_NUMBER=$(getParsedBuildNumber "$GIT_TAG_FULL")
+            MARKETING_VERSION=$(echo "$parsedTagVersion" | tr -d '\n')
+            MARKETING_VERSION_ESCAPED=$(echo "$MARKETING_VERSION" | sed 's/[\/&]/\\&/g')
+
+            if checkVersionUpdate "$parsedTagVersion" "$oldMarketingVersion" "iOS"; then
                 if [ "$DRY_RUN" -eq 1 ]; then
                     echo "[$SCRIPT_NAME] DRY-RUN: Would update iOS file:"
-                    echo "[$SCRIPT_NAME] DRY-RUN:   Replace MARKETING_VERSION = $oldMarketingVersion; with MARKETING_VERSION = $MARKET_VERSION;"
+                    echo "[$SCRIPT_NAME] DRY-RUN:   Replace MARKETING_VERSION = $oldMarketingVersion; with MARKETING_VERSION = $MARKETING_VERSION_ESCAPED;"
                     echo "[$SCRIPT_NAME] DRY-RUN:   Replace CURRENT_PROJECT_VERSION = $oldCurrentProjectVersion; with CURRENT_PROJECT_VERSION = $BUILD_NUMBER;"
                 else
-                    sed -i "s/MARKETING_VERSION = $oldMarketingVersion;/MARKETING_VERSION = $MARKET_VERSION;/" "$IOS_FILE"
-                    sed -i "s/CURRENT_PROJECT_VERSION = $oldCurrentProjectVersion;/CURRENT_PROJECT_VERSION = $BUILD_NUMBER;/" "$IOS_FILE"
+                    sed -i "" "s/MARKETING_VERSION = .*/MARKETING_VERSION = $MARKETING_VERSION_ESCAPED;/g" "$IOS_FILE"
+                    sed -i "" "s/CURRENT_PROJECT_VERSION = .*/CURRENT_PROJECT_VERSION = $BUILD_NUMBER;/g" "$IOS_FILE"
                     echo "[$SCRIPT_NAME] Updated iOS version in $IOS_FILE"
                 fi
             else
@@ -347,6 +392,7 @@ updateVersion() {
             oldVersionName=$(grep 'versionName' "$AOS_FILE" | awk -F\" '{print $2}')
             oldVersionCode=$(grep 'versionCode' "$AOS_FILE" | awk '{print $2}')
             parsedTagVersion=$(getParsedVersion "$GIT_TAG_FULL")
+            BUILD_NUMBER=$(getParsedBuildNumber "$GIT_TAG_FULL")
 
             if checkVersionUpdate "$parsedTagVersion" "$oldVersionName" "Android"; then
                 if [ "$DRY_RUN" -eq 1 ]; then
@@ -354,8 +400,8 @@ updateVersion() {
                     echo "[$SCRIPT_NAME] DRY-RUN:   Replace versionName \"$oldVersionName\" with versionName \"$parsedTagVersion\""
                     echo "[$SCRIPT_NAME] DRY-RUN:   Replace versionCode $oldVersionCode with versionCode $BUILD_NUMBER"
                 else
-                    sed -i "s/versionName \"$oldVersionName\"/versionName \"$parsedTagVersion\"/" "$AOS_FILE"
-                    sed -i "s/versionCode $oldVersionCode/versionCode $BUILD_NUMBER/" "$AOS_FILE"
+                    sed -i "s/versionName .*/versionName \"$parsedTagVersion\"/" "$AOS_FILE"
+                    sed -i "s/versionCode .*/versionCode $BUILD_NUMBER/" "$AOS_FILE"
                     echo "[$SCRIPT_NAME] Updated Android version in $AOS_FILE"
                 fi
             else
@@ -434,7 +480,7 @@ shouldUpdateVersion() {
     
     # iOS와 Android 파일 존재 여부 확인
     HAS_IOS_FILE=$(find . -name 'project.pbxproj' -not -path "*/Pods/*" -not -path "*/node_modules/*" -print -quit)
-    HAS_AOS_FILE=$(find . -name 'build.gradle' -exec grep -l 'com.android.application' {} + 2>/dev/null | grep -v 'node_modules' | head -n1)
+    HAS_AOS_FILE=$(find . -name 'build.gradle' -exec grep -l 'com.android.application' {} + 2>/dev/null | grep -v 'node_modules' | head -n 1)
     
     # 태로젝트 파일이 하나도 없으면 early return
     if [ -z "$HAS_IOS_FILE" ] && [ -z "$HAS_AOS_FILE" ]; then
@@ -445,7 +491,7 @@ shouldUpdateVersion() {
     
     if [ -n "$HAS_IOS_FILE" ]; then
         local oldMarketingVersion
-        oldMarketingVersion=$(grep 'MARKETING_VERSION =' "$HAS_IOS_FILE" | awk '{print $3}' | tr -d ';' | head -n1)
+        oldMarketingVersion=$(grep 'MARKETING_VERSION =' "$HAS_IOS_FILE" | awk '{print $3}' | tr -d ';' | head -n 1)
         if [ -n "$oldMarketingVersion" ]; then
             checkVersionUpdate "$parsedTagVersion" "$oldMarketingVersion" "iOS" && SHOULD_UPDATE=1
         fi
@@ -453,7 +499,7 @@ shouldUpdateVersion() {
     
     if [ -n "$HAS_AOS_FILE" ]; then
         local oldVersionName
-        oldVersionName=$(grep 'versionName' "$HAS_AOS_FILE" | awk -F'"' '{print $2}' | head -n1)
+        oldVersionName=$(grep 'versionName' "$HAS_AOS_FILE" | awk -F'"' '{print $2}' | head -n 1)
         if [ -n "$oldVersionName" ]; then
             checkVersionUpdate "$parsedTagVersion" "$oldVersionName" "Android" && SHOULD_UPDATE=1
         fi
