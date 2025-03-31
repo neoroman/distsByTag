@@ -400,8 +400,8 @@ updateVersion() {
                     echo "[$SCRIPT_NAME] DRY-RUN:   Replace versionName \"$oldVersionName\" with versionName \"$parsedTagVersion\""
                     echo "[$SCRIPT_NAME] DRY-RUN:   Replace versionCode $oldVersionCode with versionCode $BUILD_NUMBER"
                 else
-                    sed -i "s/versionName .*/versionName \"$parsedTagVersion\"/" "$AOS_FILE"
-                    sed -i "s/versionCode .*/versionCode $BUILD_NUMBER/" "$AOS_FILE"
+                    sed -i "" "s/versionName .*/versionName \"$parsedTagVersion\"/" "$AOS_FILE"
+                    sed -i "" "s/versionCode .*/versionCode $BUILD_NUMBER/" "$AOS_FILE"
                     echo "[$SCRIPT_NAME] Updated Android version in $AOS_FILE"
                 fi
             else
